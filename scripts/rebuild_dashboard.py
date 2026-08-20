@@ -51,17 +51,34 @@ if not APPS_URL:
 #   2. Reads all rows from the 'database' tab
 #   3. Returns them as JSONP: __data__({"sheet":"database","rows":[...]})
 # We pass callback=__data__ so we can strip that wrapper and parse the JSON.
+import time
+
 print("Fetching data from Apps Script...")
-try:
-    url = APPS_URL + "?sheet=database&callback=__data__"
-    with urllib.request.urlopen(url, timeout=120) as r:
-        raw = r.read().decode('utf-8')
-    # Strip the JSONP wrapper: __data__({...}) → {...}
-    data = json.loads(raw[len('__data__('):-1])
-    rows = data['rows']   # List of dicts, one per row in the sheet
-    print(f"Fetched {len(rows)} rows")
-except Exception as e:
-    print(f"ERROR fetching data: {e}")
+url = APPS_URL + "?sheet=database&callback=__data__"
+
+MAX_RETRIES = 4
+BASE_DELAY = 10  # seconds
+
+rows = None
+last_error = None
+for attempt in range(1, MAX_RETRIES + 1):
+    try:
+        with urllib.request.urlopen(url, timeout=120) as r:
+            raw = r.read().decode('utf-8')
+        data = json.loads(raw[len('__data__('):-1])
+        rows = data['rows']
+        print(f"Fetched {len(rows)} rows (attempt {attempt})")
+        break
+    except Exception as e:
+        last_error = e
+        print(f"Attempt {attempt}/{MAX_RETRIES} failed: {e}")
+        if attempt < MAX_RETRIES:
+            wait = BASE_DELAY * attempt
+            print(f"Retrying in {wait}s...")
+            time.sleep(wait)
+
+if rows is None:
+    print(f"ERROR fetching data after {MAX_RETRIES} attempts: {last_error}")
     sys.exit(1)
 
 # ── STEP 3: Build the main DataFrame ──────────────────────────────────────────
@@ -340,11 +357,22 @@ last3 = all_m[-3:]   # Last 3 months in dataset (for "current" production window
 prev3 = all_m[-6:-3] # 3 months before that (for "prior" production window)
 
 # Calculate OOR streak per mill
+# Only flag a mill's OOR streak if its most recent iCheck report falls
+# within the last RECENT_MONTHS_THRESHOLD months of the dataset.
+# This prevents stale/terminated mills (last reported a year+ ago) from
+# showing up as "currently" out of range in the Action Flags table.
+RECENT_MONTHS_THRESHOLD = 3
+recent_months_set = set(months_list[-RECENT_MONTHS_THRESHOLD:])
+
 mill_ich = base[base['Icheck'].notna() & (base['Icheck'] != 0)].copy()
 mill_ich['oor'] = ~((mill_ich['Icheck'] >= 14) & (mill_ich['Icheck'] <= 21.25))
 persist = {}
 for mc, grp in mill_ich.groupby('Mill Code'):
     sg = grp.sort_values('MonthStr', ascending=False)  # Latest first
+    latest_ich_month = sg.iloc[0]['MonthStr']
+    if latest_ich_month not in recent_months_set:
+        persist[mc] = 0   # stale — don't flag as currently OOR
+        continue
     streak = 0
     for _, r in sg.iterrows():
         if r['oor']: streak += 1

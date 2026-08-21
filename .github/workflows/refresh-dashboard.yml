@@ -32,7 +32,13 @@ jobs:
       - name: Fetch data and rebuild data.json
         env:
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
-        run: python scripts/rebuild_dashboard.py
+        run: |
+          for i in 1 2 3; do
+            python scripts/rebuild_dashboard.py && exit 0
+            echo "Attempt $i failed, retrying in 30s..."
+            sleep 30
+          done
+          exit 1
 
       - name: Commit and push updated data.json
         run: |

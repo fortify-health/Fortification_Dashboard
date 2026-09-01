@@ -443,7 +443,7 @@ table.dt{width:100%;border-collapse:collapse;font-size:12.5px}
   </div>
   <div class="card">
     <div class="card-head">
-      <div class="card-title">iCheck Action Flags <span style="font-size:11.5px;color:var(--muted);font-weight:400">(all 214 mills, independent of global filters)</span></div>
+      <div class="card-title">iCheck Action Flags</div>
       <div class="card-sub">Every launched mill with iCheck status based on most recent reported value</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
@@ -456,6 +456,7 @@ table.dt{width:100%;border-collapse:collapse;font-size:12.5px}
         <option value="No Data">No Data</option>
       </select>
       <select id="if-state" onchange="renderIchFlags()" style="font-size:12px;padding:5px 22px 5px 8px;border-radius:6px;border:1px solid var(--border)"><option value="">All States</option></select>
+      <select id="if-month" onchange="renderIchFlags()" style="font-size:12px;padding:5px 22px 5px 8px;border-radius:6px;border:1px solid var(--border)"><option value="">All Reported Months</option></select>
       <select id="if-streak" onchange="renderIchFlags()" style="font-size:12px;padding:5px 22px 5px 8px;border-radius:6px;border:1px solid var(--border)">
         <option value="">Any streak</option>
         <option value="1">1+ month OOR</option>
@@ -767,6 +768,19 @@ function initSelects(){
     if(!sel) return;
     states.forEach(function(s){sel.add(new Option(s,s));});
   });
+  // Populate iCheck Action Flags "Reported Month" filter from actual ALL_FLAGS data
+  var ifMonthEl=document.getElementById('if-month');
+  if(ifMonthEl && typeof ALL_FLAGS!=='undefined' && ALL_FLAGS){
+    var reportedMonths={};
+    ALL_FLAGS.forEach(function(r){ if(r.ich_month) reportedMonths[r.ich_month]=1; });
+    var monthKeys=Object.keys(reportedMonths).sort().reverse();  // most recent first
+    var MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    monthKeys.forEach(function(m){
+      var p=m.split('-');
+      var label=MN[+p[1]-1]+' '+p[0];
+      ifMonthEl.add(new Option(label,m));
+    });
+  }
   renderProdFlags();
   renderIchFlags();
   renderReversionTable();
@@ -1253,13 +1267,15 @@ function renderIchFlags(){
   // Local filters (independent of global filters)
   var statusF = document.getElementById('if-status') ? document.getElementById('if-status').value : '';
   var stateF  = document.getElementById('if-state')  ? document.getElementById('if-state').value  : '';
+  var monthF  = document.getElementById('if-month')  ? document.getElementById('if-month').value  : '';
   var streakF = document.getElementById('if-streak') ? parseInt(document.getElementById('if-streak').value)||0 : 0;
   var searchF = document.getElementById('if-search') ? (document.getElementById('if-search').value||'').toLowerCase() : '';
 
   // Build per-mill flags from ALL_FLAGS (independent of global filters)
-  var rows = ALL_FLAGS.filter(function(r){
+   var rows = ALL_FLAGS.filter(function(r){
     if(statusF && r.ichstatus !== statusF) return false;
     if(stateF  && r.state     !== stateF)  return false;
+    if(monthF  && r.ich_month !== monthF)  return false;
     if(streakF && (r.ich_streak||0) < streakF) return false;
     if(searchF && (r.name||'').toLowerCase().indexOf(searchF) < 0) return false;
     return true;
@@ -1750,6 +1766,24 @@ function renderICheck(recs) {
     if(!millLatest[mc]||r[F.MONTH]>millLatest[mc].mo)
       millLatest[mc]={mo:r[F.MONTH],ichs:r[F.ICHS],ich:r[F.ICHECK],m:D.months[r[F.MONTH]]};
   });
+  // Persistent OOR mills (3+ consecutive months)
+  var persistOOR=[];
+  var millLatest={};
+  ir.forEach(function(r){
+    var mc=r[F.MILL];
+    if(!millLatest[mc]||r[F.MONTH]>millLatest[mc].mo)
+      millLatest[mc]={mo:r[F.MONTH],ichs:r[F.ICHS],ich:r[F.ICHECK],m:D.months[r[F.MONTH]]};
+  });
+  // Recency window: a mill only counts if its latest record is within
+  // the last RECENT_MONTHS_THRESHOLD months of the filtered data (mk is already
+  // the sorted list of months present in the current filtered iCheck records).
+  var RECENT_MONTHS_THRESHOLD = 3;
+  var recentMonthKeys = mk.slice(-RECENT_MONTHS_THRESHOLD);
+  var recentMoIdxSet = {};
+  recentMonthKeys.forEach(function(m){
+    var idx = D.months.indexOf(m);
+    if(idx>=0) recentMoIdxSet[idx]=true;
+  });
   // Calculate streak per mill using filtered records
   var millRecords={};
   ir.forEach(function(r){
@@ -1759,6 +1793,8 @@ function renderICheck(recs) {
   });
   Object.keys(millRecords).forEach(function(mc){
     var sorted=millRecords[mc].sort(function(a,b){return b.mo-a.mo;});
+    var latestMo=sorted[0].mo;
+    if(!recentMoIdxSet[latestMo]) return;   // stale — skip entirely
     var streak=0;
     for(var i=0;i<sorted.length;i++){
       if(sorted[i].ichs!==2)streak++;

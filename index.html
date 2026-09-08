@@ -769,13 +769,13 @@ function initSelects(){
     states.forEach(function(s){sel.add(new Option(s,s));});
   });
   // Populate iCheck Action Flags "Reported Month" filter from actual ALL_FLAGS data
+  // Populate iCheck Action Flags "Reported Month" filter using the full
+  // dataset month list (D.months) — lets users browse ANY historical month,
+  // not just each mill's own latest report.
   var ifMonthEl=document.getElementById('if-month');
-  if(ifMonthEl && typeof ALL_FLAGS!=='undefined' && ALL_FLAGS){
-    var reportedMonths={};
-    ALL_FLAGS.forEach(function(r){ if(r.ich_month) reportedMonths[r.ich_month]=1; });
-    var monthKeys=Object.keys(reportedMonths).sort().reverse();  // most recent first
+  if(ifMonthEl && D.months){
     var MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    monthKeys.forEach(function(m){
+    D.months.slice().reverse().forEach(function(m){   // newest first
       var p=m.split('-');
       var label=MN[+p[1]-1]+' '+p[0];
       ifMonthEl.add(new Option(label,m));
@@ -1271,11 +1271,67 @@ function renderIchFlags(){
   var streakF = document.getElementById('if-streak') ? parseInt(document.getElementById('if-streak').value)||0 : 0;
   var searchF = document.getElementById('if-search') ? (document.getElementById('if-search').value||'').toLowerCase() : '';
 
-  // Build per-mill flags from ALL_FLAGS (independent of global filters)
-   var rows = ALL_FLAGS.filter(function(r){
+  var rows;
+
+  if(monthF){
+    // ── Historical month view ──────────────────────────────────────────────
+    // Rebuilt fresh from full records for the selected month. Shows every
+    // mill that actually reported an iCheck value that month, with the OOR
+    // streak counted backward FROM that month (not from today).
+    var monthIdx = D.months.indexOf(monthF);
+    var byMill = {};
+    D.records.forEach(function(r){
+      var mc = r[F.MILL];
+      if(!byMill[mc]) byMill[mc] = [];
+      byMill[mc].push(r);
+    });
+
+    rows = [];
+    Object.keys(byMill).forEach(function(mcStr){
+      var mc = +mcStr;
+      var recs = byMill[mcStr];
+      var thisMonthRec = null;
+      for(var i=0;i<recs.length;i++){
+        if(recs[i][F.MONTH]===monthIdx && recs[i][F.ICHECK]!=null){ thisMonthRec = recs[i]; break; }
+      }
+      if(!thisMonthRec) return;  // mill didn't report iCheck this specific month
+
+      // Streak backward FROM the selected month
+      var sorted = recs.filter(function(r){ return r[F.ICHECK]!=null && r[F.MONTH]<=monthIdx; })
+                        .sort(function(a,b){ return b[F.MONTH]-a[F.MONTH]; });
+      var streak=0;
+      for(var i2=0;i2<sorted.length;i2++){
+        if(sorted[i2][F.ICHS]!==2) streak++;
+        else break;
+      }
+
+      var ichstatus = thisMonthRec[F.ICHS]===1?'Below Range'
+                    : thisMonthRec[F.ICHS]===2?'Within Range'
+                    : thisMonthRec[F.ICHS]===3?'21.26-28'
+                    : thisMonthRec[F.ICHS]===4?'Above 28':'No Data';
+
+      rows.push({
+        mc: D.mills[mc],   // actual mill code string, not the numeric index
+        name: D.mill_names[D.mills[mc]] || D.mills[mc],
+        state: D.states[thisMonthRec[F.STATE]] || '',
+        cluster: D.clusters[thisMonthRec[F.CLUSTER]] || '',
+        ich_val: thisMonthRec[F.ICHECK],
+        ich_month: monthF,
+        ich_streak: streak,
+        ichstatus: ichstatus
+      });
+    });
+  } else {
+    // ── Default view (no month selected) ───────────────────────────────────
+    // Unchanged — one snapshot per mill, using each mill's own latest report,
+    // with stale mills (>3mo) already zeroed out in ALL_FLAGS.
+    rows = ALL_FLAGS.slice();
+  }
+
+  // Apply the remaining filters on top — same logic in both modes
+  rows = rows.filter(function(r){
     if(statusF && r.ichstatus !== statusF) return false;
     if(stateF  && r.state     !== stateF)  return false;
-    if(monthF  && r.ich_month !== monthF)  return false;
     if(streakF && (r.ich_streak||0) < streakF) return false;
     if(searchF && (r.name||'').toLowerCase().indexOf(searchF) < 0) return false;
     return true;
@@ -1311,6 +1367,8 @@ function renderIchFlags(){
     return MN[+p[1]-1]+' '+p[0];
   }
 
+  var streakColLabel = monthF ? 'Consec. OOR (as of '+ml2(monthF)+')' : 'Consec. OOR Months';
+
   var h = '<table class="dt"><thead><tr>'+
     '<th>Mill<\/th>'+
     '<th>State<\/th>'+
@@ -1318,7 +1376,7 @@ function renderIchFlags(){
     '<th>iCheck Status<\/th>'+
     '<th>Latest iCheck (mg/kg)<\/th>'+
     '<th>Reported Month<\/th>'+
-    '<th>Consec. OOR Months<\/th>'+
+    '<th>'+streakColLabel+'<\/th>'+
     '<\/tr><\/thead><tbody>';
 
   rows.forEach(function(r){
@@ -1346,7 +1404,6 @@ function renderIchFlags(){
   h += '<\/tbody><\/table>';
   setHTML('ich-flags', h);
 }
-
 
 function renderReversionTable(){
   var reasonF = document.getElementById('rv-reason') ? document.getElementById('rv-reason').value : '';
